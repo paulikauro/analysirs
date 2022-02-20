@@ -56,10 +56,8 @@ impl GraphBinExpr {
             }
         }
     }
-}
 
-impl GraphBinExpr {
-    fn new() -> GraphBinExpr {
+    pub fn new() -> GraphBinExpr {
         GraphBinExpr { nodes: Vec::new() }
     }
 }
@@ -75,12 +73,31 @@ impl BinExpr for GraphBinExpr {
         self.push(GraphNode::Lit(value))
     }
     fn not(&mut self, x: GraphId) -> GraphId {
-        self.push(GraphNode::Not(x))
+        use GraphNode::*;
+        match self.nodes[x.0] {
+            Lit(value) => self.push(Lit(!value)),
+            Not(y) => y,
+            _ => self.push(Not(x)),
+        }
     }
     fn and(&mut self, x: GraphId, y: GraphId) -> GraphId {
-        self.push(GraphNode::And(x, y))
+        use GraphNode::*;
+        match (&self.nodes[x.0], &self.nodes[y.0]) {
+            (Lit(true), _) => y,
+            (Lit(false), _) => self.push(Lit(false)),
+            (_, Lit(true)) => x,
+            (_, Lit(false)) => self.push(Lit(false)),
+            _ => self.push(And(x, y)),
+        }
     }
     fn or(&mut self, x: GraphId, y: GraphId) -> GraphId {
-        self.push(GraphNode::Or(x, y))
+        use GraphNode::*;
+        match (&self.nodes[x.0], &self.nodes[y.0]) {
+            (Lit(false), _) => y,
+            (Lit(true), _) => self.push(Lit(true)),
+            (_, Lit(false)) => x,
+            (_, Lit(true)) => self.push(Lit(true)),
+            _ => self.push(Or(x, y)),
+        }
     }
 }

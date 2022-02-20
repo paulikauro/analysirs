@@ -26,7 +26,9 @@ pub fn find_io(circuit: &Circuit) -> IOInfo {
                 info.outputs.insert(id);
             }
             NodeType::Repeater(..) => {
-                let (data_inputs, clock_inputs) = partition_inputs(node);
+                let (default, side) = partition_inputs(node);
+                let data_inputs: Vec<NodeId> = default.into_iter().map(|x| x.to).collect();
+                let clock_inputs: Vec<NodeId> = side.into_iter().map(|x| x.to).collect();
                 if clock_inputs.is_empty() {
                     // not being locked
                     continue;
@@ -133,14 +135,9 @@ fn find_inputs(
 }
 
 /// Partition inputs into (default inputs, side inputs).
-pub fn partition_inputs(node: &Node) -> (Vec<NodeId>, Vec<NodeId>) {
-    let (default, side): (Vec<Link>, Vec<Link>) = node
-        .inputs
+pub fn partition_inputs(node: &Node) -> (Vec<Link>, Vec<Link>) {
+    node.inputs
         .iter()
         .cloned()
-        .partition(|x| x.ty == LinkType::Default);
-    (
-        default.into_iter().map(|x| x.to).collect(),
-        side.into_iter().map(|x| x.to).collect(),
-    )
+        .partition(|x| x.ty == LinkType::Default)
 }
