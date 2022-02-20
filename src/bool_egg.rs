@@ -4,9 +4,10 @@ use crate::separate::{partition_inputs, CombinationalBlock};
 use anyhow::bail;
 use core::str::FromStr;
 use egg::{rewrite as rw, *};
-use redpiler_graph::{BlockPos, ComparatorMode, Link, LinkType, Node, NodeId, NodeType};
+use redpiler_graph::{ComparatorMode, Link, Node, NodeId, NodeType};
 use std::collections::{HashMap, HashSet};
-use std::fmt;
+use std::fmt::{self, Debug};
+use std::hash::Hash;
 use Expr::*;
 
 define_language! {
@@ -46,7 +47,9 @@ impl fmt::Display for NodeIdWrapper {
     }
 }
 
-pub fn block_to_expr<B: BinExpr<Name = NodeId>>(
+pub fn block_to_expr<
+    B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone + Copy>,
+>(
     b: &mut B,
     circuit: &Circuit,
     block: &CombinationalBlock,
@@ -160,19 +163,19 @@ fn rewrite(id: Id, egraph: EGraph<Expr, ()>) -> RecExpr<Expr> {
         rw!("idemp-and"; "(and ?x ?x)" => "?x"),
         rw!("idemp-or"; "(or ?x ?x)" => "?x"),
         // double negation
-        rw!("neg-neg"; "(neg (neg ?x))" => "?x"),
+        rw!("neg-neg"; "(neg (neg ?x))" => "?x"), //
         rw!("not-not"; "(not (not ?x))" => "?x"),
-        // neg distributivity
+        // neg distributivity //
         rw!("neg-add"; "(neg (add ?x ?y))" => "(add (neg ?x) (neg ?y))"),
         rw!("neg-min"; "(neg (min ?x ?y))" => "(max (neg ?x) (neg ?y))"),
         rw!("neg-max"; "(neg (max ?x ?y))" => "(min (neg ?x) (neg ?y))"),
-        // add distributivity
+        // add distributivity //
         rw!("add-max"; "(add ?x (max ?y ?z))" => "(max (add ?x ?y) (add ?x ?z))"),
         rw!("add-min"; "(add ?x (min ?y ?z))" => "(min (add ?x ?y) (add ?x ?z))"),
-        // bin distributivity
+        // bin distributivity //
         rw!("bin-min"; "(bin (min ?x ?y))" => "(and (bin ?x) (bin ?y))"),
         rw!("bin-max"; "(bin (max ?x ?y))" => "(or (bin ?x) (bin ?y))"),
-        // other
+        // other //
         rw!("bin-sig"; "(bin (sig ?x))" => "?x"),
     ];
     rules.extend(
@@ -196,7 +199,11 @@ fn invert_varmap(vars: HashMap<NodeId, usize>) -> HashMap<usize, NodeId> {
     vars.iter().map(|(x, y)| (*y, *x)).collect()
 }
 
-fn do_booleanify<B: BinExpr<Name = NodeId>>(e: &RecExpr<Expr>, id: Id, b: &mut B) -> B::Id {
+fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone + Copy>>(
+    e: &RecExpr<Expr>,
+    id: Id,
+    b: &mut B,
+) -> B::Id {
     println!("do_booleanify {} {:?}", id, e[id]);
     match &e[id] {
         Sig(x) => do_booleanify(e, *x, b),
@@ -220,20 +227,21 @@ fn do_booleanify<B: BinExpr<Name = NodeId>>(e: &RecExpr<Expr>, id: Id, b: &mut B
                 SConst(value) => b.lit(*value > 0),
                 Neg(y) => {
                     let node = &e[*y];
-                    if let SConst(value) = node {
-                        b.lit(*value > 0)
-                    } else {
-                        panic!("do_booleanify: (bin (neg not-const))")
+                    match node {
+                        SConst(value) => b.lit(*value > 0),
+                        // sig of anything >= 0, neg of that < 0, so not > 0 which is false
+                        Sig(_) => b.lit(false),
+                        _ => panic!("do_booleanify: (bin (neg not-const)), {} {:?}", y, e[*y]),
                     }
                 }
                 Add([x, y]) => {
-                    let (mut constant, mut addends) = flatten_add(e, *x);
-                    let (other_constant, other_addends) = flatten_add(e, *y);
+                    let (mut constant, mut addends) = flatten_add(e, *x, b);
+                    let (other_constant, other_addends) = flatten_add(e, *y, b);
                     addends.extend(other_addends);
                     constant += other_constant;
                     // local_inputs is effectively a set of the inputs to this node
-                    let mut local_inputs: Vec<usize> = addends.iter().map(|x| x.0).collect();
-                    local_inputs.sort_unstable();
+                    let mut local_inputs: Vec<B::Id> = addends.iter().map(|x| x.0).collect();
+                    local_inputs.sort();
                     local_inputs.dedup();
                     println!(
                         "generating add, local inputs: {:?} constant: {}",
@@ -254,10 +262,10 @@ fn do_booleanify<B: BinExpr<Name = NodeId>>(e: &RecExpr<Expr>, id: Id, b: &mut B
                             println!("subst {} output {}", subst, output);
                             if output > 0 {
                                 let mut minterm = b.lit(true);
-                                for &input in &local_inputs {
-                                    let is_set = var_from_subst(input, subst);
-                                    let mut literal = b.var(input);
-                                    if is_set {
+                                for input in &local_inputs {
+                                    let is_set = var_from_subst(var_map[input], subst);
+                                    let mut literal = *input;
+                                    if !is_set {
                                         literal = b.not(literal);
                                     }
                                     minterm = b.and(minterm, literal);
@@ -280,10 +288,10 @@ fn var_from_subst(index: usize, subst: u64) -> bool {
     subst & (1 << index) == 0
 }
 
-fn eval_addends(
-    addends: &[Addend],
+fn eval_addends<I: Hash + Eq>(
+    addends: &[Addend<I>],
     constant: i32,
-    var_map: &HashMap<NodeId, usize>,
+    var_map: &HashMap<I, usize>,
     subst: u64,
 ) -> i32 {
     fn inv_to_neg(x: bool) -> i32 {
@@ -301,10 +309,14 @@ fn eval_addends(
     added + constant
 }
 
-struct Addend(NodeId, bool);
+struct Addend<I>(I, bool);
 
 /// Flatten a tree of addition nodes into a single constant and a vec of other inputs.
-fn flatten_add(e: &RecExpr<Expr>, start: Id) -> (i32, Vec<Addend>) {
+fn flatten_add<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone + Copy>>(
+    e: &RecExpr<Expr>,
+    start: Id,
+    b: &mut B,
+) -> (i32, Vec<Addend<B::Id>>) {
     let mut addends = Vec::new();
     let mut constant = 0i32;
     let mut frontier = vec![start];
@@ -315,25 +327,16 @@ fn flatten_add(e: &RecExpr<Expr>, start: Id) -> (i32, Vec<Addend>) {
             Neg(x) => match &e[*x] {
                 SConst(value) => constant -= value,
                 Sig(y) => {
-                    if let Input(name) = &e[*y] {
-                        addends.push(Addend(name.0, true))
-                    } else {
-                        // TODO: wut
-                        panic!("flatten_add: (neg (sig not-input))")
-                    }
+                    let y_b = do_booleanify(e, *y, b);
+                    addends.push(Addend(y_b, true))
                 }
-                _ => panic!("flatten_add: (neg not-const-or-sig)"),
+                _ => panic!("flatten_add: (neg not-const-or-sig) {} {:?}", x, e[*x]),
             },
             Sig(x) => {
-                if let Input(name) = &e[*x] {
-                    println!("WELL i got an input here!!! {}", name);
-                    addends.push(Addend(name.0, false))
-                } else {
-                    // TODO: wut
-                    panic!("flatten_add: (sig not-input) {:?} {:?}", x, e[*x])
-                }
+                let x_b = do_booleanify(e, *x, b);
+                addends.push(Addend(x_b, false))
             }
-            _ => panic!("flatten_add: not supported"),
+            _ => panic!("flatten_add: not supported {} {:?}", id, e[id]),
         }
     }
     (constant, addends)

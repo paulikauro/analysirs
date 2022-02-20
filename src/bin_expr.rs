@@ -22,7 +22,7 @@ pub struct GraphBinExpr {
     nodes: Vec<GraphNode>,
 }
 
-#[derive(Hash, PartialEq, Eq, Debug, Clone, Copy)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
 pub struct GraphId(usize);
 
 impl GraphBinExpr {
