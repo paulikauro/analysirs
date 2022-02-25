@@ -5,6 +5,8 @@ use std::fs;
 
 pub struct Circuit {
     pub nodes: Vec<Node>,
+    /// Inverse of Node.inputs
+    pub outputs: Vec<Vec<NodeId>>,
     pub meta: CircuitMeta,
 }
 
@@ -34,5 +36,21 @@ pub struct Name {
 pub fn load_circuit(basepath: &str) -> Result<Circuit> {
     let nodes = deserialize(&fs::read(format!("{}.bc", basepath))?)?;
     let meta = serde_json::from_slice(&fs::read(format!("{}.json", basepath))?)?;
-    Ok(Circuit { nodes, meta })
+    let outputs = construct_outputs(&nodes);
+    Ok(Circuit {
+        nodes,
+        outputs,
+        meta,
+    })
+}
+
+fn construct_outputs(nodes: &[Node]) -> Vec<Vec<NodeId>> {
+    let mut outputs = Vec::with_capacity(nodes.len());
+    outputs.resize(nodes.len(), Vec::new());
+    for (id, node) in nodes.iter().enumerate() {
+        for link in &node.inputs {
+            outputs[link.to].push(id);
+        }
+    }
+    outputs
 }

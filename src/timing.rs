@@ -3,7 +3,7 @@ use crate::separate::CombinationalBlock;
 use redpiler_graph::*;
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct Delays {
     pub contamination: usize,
     pub propagation: usize,
@@ -26,48 +26,54 @@ impl Delays {
 
 pub fn calculate_delays(circuit: &Circuit, block: &CombinationalBlock) -> Delays {
     let n = circuit.nodes.len();
-    let mut delays: Vec<Delays> = vec![Default::default(); n];
-    let mut visited = vec![0; n];
-    let mut frontier = block.inputs.clone();
-    while let Some(id) = frontier.pop() {
+    let mut delays: Vec<Delays> = vec![
+        Delays {
+            contamination: std::usize::MAX,
+            propagation: std::usize::MIN
+        };
+        n
+    ];
+    for id in topological_sort(circuit, block) {
         let node = &circuit.nodes[id];
         delays[id] = node
             .inputs
             .iter()
             .map(|input| delays[input.to])
             .reduce(|a, b| a.combine(b))
-            .unwrap_or_default()
+            .unwrap_or(Delays {
+                contamination: 0,
+                propagation: 0,
+            })
             .add(node_delay(node));
-        println!("at {} {:?} {:?}", id, node, delays[id]);
-        for &output in &node.updates {
-            visited[output] += 1;
-            if visited[output] == circuit.nodes[output].inputs.len() {
-                frontier.push(output);
-            }
-        }
     }
     delays[block.output]
 }
 
 fn topological_sort(circuit: &Circuit, block: &CombinationalBlock) -> Vec<NodeId> {
     let mut order = Vec::new();
-    let mut stack = block.inputs.clone();
     let mut visited = HashSet::new();
-    while let Some(id) = stack.pop() {
-        if visited.contains(&id) {
-            continue;
-        }
-        visited.insert(id);
-        order.push(id);
-        let node = &circuit.nodes[id];
-        for neighbor in &node.updates {
-            if !visited.contains(neighbor) {
-                stack.push(*neighbor)
-            }
-        }
+    for &input in &block.inputs {
+        topological_sort_dfs(circuit, block, input, &mut order, &mut visited);
     }
     order.reverse();
     order
+}
+
+fn topological_sort_dfs(
+    circuit: &Circuit,
+    block: &CombinationalBlock,
+    id: NodeId,
+    order: &mut Vec<NodeId>,
+    visited: &mut HashSet<NodeId>,
+) {
+    if visited.contains(&id) {
+        return;
+    }
+    visited.insert(id);
+    for &neighbor in &circuit.outputs[id] {
+        topological_sort_dfs(circuit, block, neighbor, order, visited);
+    }
+    order.push(id);
 }
 
 fn node_delay(node: &Node) -> usize {

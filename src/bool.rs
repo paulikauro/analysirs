@@ -63,7 +63,19 @@ impl Graph {
                     let xz = self.add(Add(*x, z));
                     self.push(Min(xy, xz))
                 }
-                _ => self.push(e),
+                _ => match self.nodes[*x] {
+                    Max(b, c) => {
+                        let ba = self.add(Add(b, *a));
+                        let ca = self.add(Add(c, *a));
+                        self.push(Max(ba, ca))
+                    }
+                    Min(b, c) => {
+                        let ba = self.add(Add(b, *a));
+                        let ca = self.add(Add(c, *a));
+                        self.push(Min(ba, ca))
+                    }
+                    _ => self.push(e),
+                },
             },
             // neg distributivity and double negation
             Neg(a) => match self.nodes[*a] {
@@ -198,7 +210,7 @@ pub fn block_to_expr<
         &HashSet::from_iter(block.inputs.iter().cloned()),
         block.output,
     );
-    graph.print_node(id, input_names);
+    // graph.print_node(id, input_names);
     println!();
     println!("booleanifying graph");
     do_booleanify(&graph, id, b)
@@ -287,7 +299,6 @@ fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + 
     id: Id,
     b: &mut B,
 ) -> B::Id {
-    println!("do_booleanify {} {:?}", id, e[id]);
     match &e[id] {
         Sig(x) => do_booleanify(e, *x, b),
         Not(x) => {
@@ -305,7 +316,6 @@ fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + 
             b.or(x, y)
         }
         Bin(x) => {
-            println!("BIN {}, {:?}", x, &e[*x]);
             match &e[*x] {
                 SConst(value) => b.lit(*value > 0),
                 Neg(y) => {
@@ -326,10 +336,6 @@ fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + 
                     let mut local_inputs: Vec<B::Id> = addends.iter().map(|x| x.0).collect();
                     local_inputs.sort();
                     local_inputs.dedup();
-                    println!(
-                        "generating add, local inputs: {:?} constant: {}",
-                        &local_inputs, constant
-                    );
                     let var_map = local_inputs
                         .iter()
                         .enumerate()
@@ -342,7 +348,6 @@ fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + 
                         let mut sum_of_products = b.lit(false);
                         for subst in 0..2u64.pow(n as u32) {
                             let output = eval_addends(&addends[..], constant, &var_map, subst);
-                            println!("subst {} output {}", subst, output);
                             if output > 0 {
                                 let mut minterm = b.lit(true);
                                 for input in &local_inputs {
