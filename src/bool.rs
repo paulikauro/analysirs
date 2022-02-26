@@ -1,10 +1,9 @@
 use crate::bin_expr::BinExpr;
 use crate::circuit::Circuit;
 use crate::separate::{partition_inputs, CombinationalBlock};
-use anyhow::bail;
 use redpiler_graph::{ComparatorMode, Link, Node, NodeId, NodeType};
 use std::collections::{HashMap, HashSet};
-use std::fmt::{self, Debug, Display};
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::ops::{Index, IndexMut};
 use Expr::*;
@@ -17,11 +16,10 @@ pub enum Expr {
     Max(Id, Id),
     And(Id, Id),
     Or(Id, Id),
-    Neg(Id),
+    Mul(Id, i32),
     Sig(Id),
     Not(Id),
     Bin(Id),
-    BConst(bool),
     SConst(i32),
     Input(NodeId),
 }
@@ -77,24 +75,24 @@ impl Graph {
                     _ => self.push(e),
                 },
             },
-            // neg distributivity and double negation
-            Neg(a) => match self.nodes[*a] {
+            // constant mul distributivity and folding
+            &Mul(a, k) => match self.nodes[a] {
                 Add(x, y) => {
-                    let nx = self.add(Neg(x));
-                    let ny = self.add(Neg(y));
+                    let nx = self.add(Mul(x, k));
+                    let ny = self.add(Mul(y, k));
                     self.push(Add(nx, ny))
                 }
                 Min(x, y) => {
-                    let nx = self.add(Neg(x));
-                    let ny = self.add(Neg(y));
-                    self.push(Max(nx, ny))
+                    let nx = self.add(Mul(x, k));
+                    let ny = self.add(Mul(y, k));
+                    self.push(if k < 0 { Max(nx, ny) } else { Min(nx, ny) })
                 }
                 Max(x, y) => {
-                    let nx = self.add(Neg(x));
-                    let ny = self.add(Neg(y));
-                    self.push(Min(nx, ny))
+                    let nx = self.add(Mul(x, k));
+                    let ny = self.add(Mul(y, k));
+                    self.push(if k < 0 { Min(nx, ny) } else { Max(nx, ny) })
                 }
-                Neg(x) => x,
+                Mul(b, l) => self.push(Mul(b, k * l)),
                 _ => self.push(e),
             },
             // bin distributivity and bin-sig
@@ -118,16 +116,6 @@ impl Graph {
                 _ => self.push(e),
             },
             _ => self.push(e),
-            // Min(Id, Id),
-            // Max(Id, Id),
-            // And(Id, Id),
-            // Or(Id, Id),
-            // Sig(Id),
-            // Not(Id),
-            // Bin(Id),
-            // BConst(bool),
-            // SConst(i32),
-            // Input(NodeId),
         }
     }
     pub fn print_node(&self, id: Id, vars: &HashMap<usize, String>) {
@@ -167,8 +155,8 @@ impl Graph {
                 self.print_node(*b, vars);
                 print!(")");
             }
-            Neg(a) => {
-                print!("(neg ");
+            Mul(a, k) => {
+                print!("(mul {} ", k);
                 self.print_node(*a, vars);
                 print!(")");
             }
@@ -187,7 +175,6 @@ impl Graph {
                 self.print_node(*a, vars);
                 print!(")");
             }
-            BConst(value) => print!("{}", value),
             SConst(value) => print!("{}", value),
             Input(input) => print!("(input {})", input),
         }
@@ -244,6 +231,21 @@ fn add_to_graph(
     let (defaults, sides) = partition_inputs(node);
     let default_input = make_input(graph, nodes, block_inputs, defaults);
     let side_input = make_input(graph, nodes, block_inputs, sides);
+    // comparator far override:
+    // actual input = max(override, max(input - 14, 0) * 15)
+    fn make_comparator_input(node: &Node, graph: &mut Graph, default_input: Id) -> Id {
+        if let Some(far_override) = node.comparator_far_input {
+            let a = graph.add(SConst(0));
+            let o = graph.add(SConst(far_override as i32));
+            let c14 = graph.add(SConst(-14));
+            let b = graph.add(Add(default_input, c14));
+            let c = graph.add(Max(b, a));
+            let d = graph.add(Mul(c, 15));
+            graph.add(Max(o, d))
+        } else {
+            default_input
+        }
+    }
 
     use NodeType::*;
     match node.ty {
@@ -258,20 +260,22 @@ fn add_to_graph(
             graph.add(Sig(a))
         }
         Comparator(ComparatorMode::Subtract) => {
+            let actual_input = make_comparator_input(node, graph, default_input);
             let a = graph.add(SConst(0));
-            let b = graph.add(Neg(side_input));
-            let c = graph.add(Add(default_input, b));
+            let b = graph.add(Mul(side_input, -1));
+            let c = graph.add(Add(actual_input, b));
             graph.add(Max(a, c))
         }
         Comparator(ComparatorMode::Compare) => {
+            let actual_input = make_comparator_input(node, graph, default_input);
             let a = graph.add(SConst(0));
             let b = graph.add(SConst(1));
-            let c = graph.add(Neg(side_input));
-            let d = graph.add(Add(default_input, c));
+            let c = graph.add(Mul(side_input, -1));
+            let d = graph.add(Add(actual_input, c));
             let e = graph.add(Add(d, b));
             let f = graph.add(Bin(e));
             let g = graph.add(Sig(f));
-            let h = graph.add(Add(default_input, g));
+            let h = graph.add(Add(actual_input, g));
             graph.add(Max(a, h))
         }
         Torch => {
@@ -312,13 +316,16 @@ fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + 
         Bin(x) => {
             match &e[*x] {
                 SConst(value) => b.lit(*value > 0),
-                Neg(y) => {
+                Mul(y, k) => {
                     let node = &e[*y];
                     match node {
-                        SConst(value) => b.lit(*value > 0),
+                        &SConst(value) => b.lit(value * k > 0),
                         // sig of anything >= 0, neg of that < 0, so not > 0 which is false
-                        Sig(_) => b.lit(false),
-                        _ => panic!("do_booleanify: (bin (neg not-const)), {} {:?}", y, e[*y]),
+                        Sig(_) if *k < 0 => b.lit(false),
+                        _ => panic!(
+                            "do_booleanify: (bin (mul not-neg not-const)), {} {:?}",
+                            y, e[*y]
+                        ),
                     }
                 }
                 Add(x, y) => {
@@ -377,22 +384,16 @@ fn eval_addends<I: Hash + Eq>(
     var_map: &HashMap<I, usize>,
     subst: u64,
 ) -> i32 {
-    fn inv_to_neg(x: bool) -> i32 {
-        match x {
-            true => -1,
-            false => 1,
-        }
-    }
     let added: i32 = addends
         .iter()
-        .map(|Addend(name, inv)| {
-            inv_to_neg(*inv) * var_from_subst(var_map[name], subst) as i32 * 15
+        .map(|Addend(name, coefficient)| {
+            coefficient * var_from_subst(var_map[name], subst) as i32 * 15
         })
         .sum();
     added + constant
 }
 
-struct Addend<I>(I, bool);
+struct Addend<I>(I, i32);
 
 /// Flatten a tree of addition nodes into a single constant and a vec of other inputs.
 fn flatten_add<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone>>(
@@ -407,17 +408,17 @@ fn flatten_add<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Cl
         match &e[id] {
             Add(x, y) => frontier.extend([x, y]),
             SConst(value) => constant += value,
-            Neg(x) => match &e[*x] {
-                SConst(value) => constant -= value,
+            Mul(x, k) => match &e[*x] {
+                SConst(value) => constant += value * k,
                 Sig(y) => {
                     let y_b = do_booleanify(e, *y, b);
-                    addends.push(Addend(y_b, true))
+                    addends.push(Addend(y_b, *k))
                 }
-                _ => panic!("flatten_add: (neg not-const-or-sig) {} {:?}", x, e[*x]),
+                _ => panic!("flatten_add: (mul k not-const-or-sig) {} {:?}", x, e[*x]),
             },
             Sig(x) => {
                 let x_b = do_booleanify(e, *x, b);
-                addends.push(Addend(x_b, false))
+                addends.push(Addend(x_b, 1))
             }
             _ => panic!("flatten_add: not supported {} {:?}", id, e[id]),
         }
