@@ -194,16 +194,14 @@ impl Graph {
     }
 }
 
-pub fn block_to_expr<
-    B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone + Copy>,
->(
+pub fn block_to_expr<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone>>(
     b: &mut B,
     circuit: &Circuit,
     block: &CombinationalBlock,
     input_names: &HashMap<usize, String>,
 ) -> B::Id {
     let mut graph = Graph { nodes: Vec::new() };
-    println!("constructing graph");
+    // println!("constructing graph");
     let id = add_to_graph(
         &mut graph,
         &circuit.nodes,
@@ -211,8 +209,8 @@ pub fn block_to_expr<
         block.output,
     );
     // graph.print_node(id, input_names);
-    println!();
-    println!("booleanifying graph");
+    // println!();
+    // println!("booleanifying graph");
     do_booleanify(&graph, id, b)
 }
 
@@ -290,11 +288,7 @@ fn add_to_graph(
     }
 }
 
-fn invert_varmap(vars: HashMap<NodeId, usize>) -> HashMap<usize, NodeId> {
-    vars.iter().map(|(x, y)| (*y, *x)).collect()
-}
-
-fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone + Copy>>(
+fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone>>(
     e: &Graph,
     id: Id,
     b: &mut B,
@@ -333,13 +327,14 @@ fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + 
                     addends.extend(other_addends);
                     constant += other_constant;
                     // local_inputs is effectively a set of the inputs to this node
-                    let mut local_inputs: Vec<B::Id> = addends.iter().map(|x| x.0).collect();
+                    let mut local_inputs: Vec<B::Id> =
+                        addends.iter().map(|x| x.0.clone()).collect();
                     local_inputs.sort();
                     local_inputs.dedup();
                     let var_map = local_inputs
                         .iter()
                         .enumerate()
-                        .map(|(i, name)| (*name, i))
+                        .map(|(i, name)| (name.clone(), i))
                         .collect();
                     let n = local_inputs.len();
                     if n == 0 {
@@ -352,7 +347,7 @@ fn do_booleanify<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + 
                                 let mut minterm = b.lit(true);
                                 for input in &local_inputs {
                                     let is_set = var_from_subst(var_map[input], subst);
-                                    let mut literal = *input;
+                                    let mut literal = input.clone();
                                     if !is_set {
                                         literal = b.not(literal);
                                     }
@@ -400,7 +395,7 @@ fn eval_addends<I: Hash + Eq>(
 struct Addend<I>(I, bool);
 
 /// Flatten a tree of addition nodes into a single constant and a vec of other inputs.
-fn flatten_add<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone + Copy>>(
+fn flatten_add<B: BinExpr<Name = NodeId, Id: Ord + PartialEq + Debug + Hash + Clone>>(
     e: &Graph,
     start: Id,
     b: &mut B,

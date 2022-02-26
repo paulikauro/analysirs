@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 pub trait BinExpr {
     type Id;
@@ -10,148 +10,137 @@ pub trait BinExpr {
     fn or(&mut self, x: Self::Id, y: Self::Id) -> Self::Id;
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
 pub struct BoolPoly {
-    nodes: Vec<PolyExpr>,
-    memo: HashMap<PolyExpr, usize>,
+    terms: BTreeSet<PolyTerm>,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Clone)]
-enum PolyExpr {
-    Zero,
-    One,
-    Var(usize),
-    Add(usize, usize),
-    Mul(usize, usize),
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
+struct PolyTerm {
+    vars: BTreeSet<usize>,
+}
+
+impl PolyTerm {
+    fn print(&self, var_map: &HashMap<usize, String>) {
+        if self.vars.is_empty() {
+            print!("1");
+            return;
+        }
+        let fake = "abcdefghijklmnopqrstuvwxyz";
+        for var in &self.vars {
+            if var_map.contains_key(var) {
+                print!("{}", var_map[var]);
+            } else {
+                print!("{}", fake.chars().nth(*var).unwrap());
+            }
+        }
+    }
+    fn one() -> PolyTerm {
+        PolyTerm {
+            vars: BTreeSet::new(),
+        }
+    }
+    fn var(id: usize) -> PolyTerm {
+        PolyTerm {
+            vars: BTreeSet::from_iter([id]),
+        }
+    }
+    fn mul(mut a: PolyTerm, b: PolyTerm) -> PolyTerm {
+        a.vars.extend(b.vars);
+        a
+    }
 }
 
 impl BoolPoly {
-    pub fn new() -> BoolPoly {
+    fn print(&self, var_map: &HashMap<usize, String>) {
+        if self.terms.is_empty() {
+            print!("0");
+            return;
+        }
+        let mut first = true;
+        for term in &self.terms {
+            if !first {
+                print!(" + ");
+            }
+            term.print(var_map);
+            first = false;
+        }
+    }
+    fn var(id: usize) -> BoolPoly {
         BoolPoly {
-            nodes: Vec::new(),
-            memo: HashMap::new(),
+            terms: BTreeSet::from_iter([PolyTerm::var(id)]),
         }
     }
-    pub fn print_node(&self, id: usize, var_map: &HashMap<usize, String>) {
-        use PolyExpr::*;
-        match &self.nodes[id] {
-            Var(name) => print!("{}", var_map[name]),
-            Zero => print!("0"),
-            One => print!("1"),
-            &Add(a, b) => {
-                print!("(+ ");
-                self.print_node(a, var_map);
-                print!(" ");
-                self.print_node(b, var_map);
-                print!(")")
-            }
-            &Mul(a, b) => {
-                print!("(* ");
-                self.print_node(a, var_map);
-                print!(" ");
-                self.print_node(b, var_map);
-                print!(")")
+    fn zero() -> BoolPoly {
+        BoolPoly {
+            terms: BTreeSet::new(),
+        }
+    }
+    fn one() -> BoolPoly {
+        BoolPoly {
+            terms: BTreeSet::from_iter([PolyTerm::one()]),
+        }
+    }
+    fn add(mut x: BoolPoly, y: BoolPoly) -> BoolPoly {
+        for term in y.terms {
+            if x.terms.contains(&term) {
+                x.terms.remove(&term);
+            } else {
+                x.terms.insert(term);
             }
         }
+        x
     }
-    fn push(&mut self, node: PolyExpr) -> usize {
-        *self.memo.entry(node.clone()).or_insert_with(|| {
-            self.nodes.push(node);
-            self.nodes.len() - 1
-        })
-    }
-    fn zero(&mut self) -> usize {
-        self.push(PolyExpr::Zero)
-    }
-    fn one(&mut self) -> usize {
-        self.push(PolyExpr::One)
-    }
-    fn sorted(&self, a: usize, b: usize) -> (&PolyExpr, usize, &PolyExpr, usize) {
-        let ae = &self.nodes[a];
-        let be = &self.nodes[b];
-        if ae < be {
-            (ae, a, be, b)
-        } else {
-            (be, b, ae, a)
+    fn mul(x: BoolPoly, y: BoolPoly) -> BoolPoly {
+        let mut result = BoolPoly::zero();
+        for xterm in x.terms {
+            for yterm in &y.terms {
+                let xy = PolyTerm::mul(xterm.clone(), yterm.clone());
+                if result.terms.contains(&xy) {
+                    result.terms.remove(&xy);
+                } else {
+                    result.terms.insert(xy);
+                }
+            }
         }
-    }
-    fn add(&mut self, x: usize, y: usize) -> usize {
-        use PolyExpr::*;
-        // sorting takes care of commutativity
-        let (ae, a, be, b) = self.sorted(x, y);
-        match (ae, be) {
-            // associativity
-            // (c + d) + b = c + (d + b)
-            // (&Add(c, d), _) => {
-            //     println!("add assoc {:?} {:?}", ae, be);
-            //     let db = self.add(d, b);
-            //     self.push(Add(c, db))
-            //     // self.add(c, db)
-            // }
-            // identity
-            // 0 + b = b
-            (Zero, _) => b,
-            // inverses
-            // a + a = 0
-            (ae, be) if ae == be => self.zero(),
-            _ => self.push(Add(a, b)),
-        }
-    }
-    fn mul(&mut self, x: usize, y: usize) -> usize {
-        use PolyExpr::*;
-        // sorting takes care of commutativity
-        let (ae, a, be, b) = self.sorted(x, y);
-        match (ae, be) {
-            // associativity
-            // (c * d) * b = c * (d * b)
-            // (&Mul(c, d), _) => {
-            //     let db = self.mul(d, b);
-            //     self.push(Mul(c, db))
-            //     // self.mul(c, db)
-            // }
-            // annihilation?
-            (Zero, _) => self.zero(),
-            // identity
-            // 1 * b = b
-            (One, _) => b,
-            // boolean property?
-            // a * a = a
-            (ae, be) if ae == be => a,
-            // distributivity
-            // (c + d) * b = (c * b) + (d * b)
-            // (&Add(c, d), _) => {
-            //     let cb = self.mul(c, b);
-            //     let db = self.mul(d, b);
-            //     // self.push(Add(cb, db))
-            //     self.add(cb, db)
-            // }
-            _ => self.push(Mul(a, b)),
-        }
+        result
     }
 }
 
-impl BinExpr for BoolPoly {
-    type Id = usize;
+pub struct BoolPolys;
+
+impl BoolPolys {
+    pub fn new() -> BoolPolys {
+        BoolPolys
+    }
+    pub fn print_node(&self, id: &BoolPoly, var_map: &HashMap<usize, String>) {
+        id.print(var_map);
+    }
+}
+
+impl BinExpr for BoolPolys {
+    type Id = BoolPoly;
     type Name = usize;
     fn var(&mut self, name: Self::Name) -> Self::Id {
-        self.push(PolyExpr::Var(name))
+        BoolPoly::var(name)
     }
     fn lit(&mut self, value: bool) -> Self::Id {
         match value {
-            false => self.zero(),
-            true => self.one(),
+            false => BoolPoly::zero(),
+            true => BoolPoly::one(),
         }
     }
     fn not(&mut self, x: Self::Id) -> Self::Id {
-        let one = self.one();
-        self.add(x, one)
+        let one = BoolPoly::one();
+        BoolPoly::add(x, one)
     }
     fn and(&mut self, x: Self::Id, y: Self::Id) -> Self::Id {
-        self.mul(x, y)
+        BoolPoly::mul(x, y)
     }
     fn or(&mut self, x: Self::Id, y: Self::Id) -> Self::Id {
-        let x_plus_y = self.add(x, y);
-        let x_times_y = self.mul(x, y);
-        self.add(x_plus_y, x_times_y)
+        let x_plus_y = BoolPoly::add(x.clone(), y.clone());
+        let x_times_y = BoolPoly::mul(x, y);
+        BoolPoly::add(x_plus_y, x_times_y)
     }
 }
 
